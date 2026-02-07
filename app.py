@@ -12,7 +12,7 @@ def run_crawler(max_pages):
     status_text = st.empty()
     progress_bar = st.progress(0)
     
-    TARGET_TAGS = ['게임', '기타', '공겜']
+    TARGET_TAGS = ['게임', '기타', '공겜','할 게임']
     CLUB_ID = "27646284"
     MENU_ID = "44"
     
@@ -236,7 +236,7 @@ else:
     
     st.divider()
     
-    if st.button("🐚 마법의 소라고동~ 도와줘!!!"):
+    if st.button("랜덤 게임 Picker"):
         if not filtered_df.empty:
             pick = filtered_df.sample(1).iloc[0]
             st.balloons()
