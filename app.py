@@ -1,24 +1,24 @@
-import streamlit as st
+from flask import Flask, render_template, request, Response, stream_with_context
 import pandas as pd
 import time
 import re
-import requests
+import json
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-def run_crawler(max_pages):
-    status_text = st.empty()
-    progress_bar = st.progress(0)
+app = Flask(__name__)
+
+def generate_crawl_stream(max_pages):
+    yield f"data: {json.dumps({'progress': 5, 'msg': '🚀 고속 브라우저 모드 시동 중...'})}\n\n"
     
-    TARGET_TAGS = ['게임', '기타', '공겜','할 게임']
+    TARGET_TAGS = ['게임', '기타', '공겜', '할 게임', '할게임']
     CLUB_ID = "27646284"
     MENU_ID = "44"
-    
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    
-    status_text.text(f"클라우드 서버에서 탐색을 시작합니다... (최대 {max_pages}페이지)")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -27,231 +27,191 @@ def run_crawler(max_pages):
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument(f"user-agent={USER_AGENT}")
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
+    chrome_options.page_load_strategy = 'eager' 
     
     driver = webdriver.Chrome(options=chrome_options)
     crawl_targets = []
     
     try:
         for page in range(1, max_pages + 1):
-            status_text.text(f"{page}페이지 스캔 중...")
+            yield f"data: {json.dumps({'progress': 10 + (page/max_pages*10), 'msg': f'📋 {page}페이지 목록 스캔 중...'})}\n\n"
             
             target_url = f"https://cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.page={page}"
             driver.get(target_url)
-            time.sleep(1.5)
+            
+            try:
+                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.article")))
+            except:
+                pass
 
             posts = driver.find_elements(By.CSS_SELECTOR, "a.article")
-            
             for post in posts:
                 try:
                     full_title = post.text.strip().replace('\n', ' ')
-                    raw_link = post.get_attribute('href')
-                    
                     category = "미분류"
-                    if full_title.startswith("[") and "]" in full_title:
+                    if full_title.startswith("["):
                         end_index = full_title.find("]")
-                        category = full_title[1:end_index]
+                        if end_index != -1:
+                            category = full_title[1:end_index]
                     
-                    if category in TARGET_TAGS and category != "공지":
+                    clean_category = category.replace(" ", "")
+                    clean_targets = [t.replace(" ", "") for t in TARGET_TAGS]
+                    
+                    if clean_category in clean_targets and category != "공지":
+                        raw_link = post.get_attribute('href')
                         match = re.search(r'articles/(\d+)', raw_link)
                         if match:
                             article_id = match.group(1)
                             if not any(d['id'] == article_id for d in crawl_targets):
-                                crawl_targets.append({
-                                    "id": article_id,
-                                    "category": category,
-                                    "title": full_title
-                                })
+                                crawl_targets.append({"id": article_id, "category": category, "title": full_title})
                 except:
                     continue
-            
-            progress_bar.progress(page / max_pages * 0.3)
-            
     except Exception as e:
-        st.error(f"목록 수집 중 에러: {e}")
-    finally:
-        driver.quit()
-
+        print(f"목록 에러: {e}")
+    
     if not crawl_targets:
-        status_text.warning("수집 대상이 없습니다.")
-        progress_bar.empty()
-        return pd.DataFrame()
+        driver.quit()
+        yield f"data: {json.dumps({'progress': 100, 'msg': '수집된 데이터가 없습니다.', 'done': True})}\n\n"
+        return
 
-    status_text.text(f"{len(crawl_targets)}개의 게임을 발견! 상세 정보를 분석합니다...")
-    
     final_data = []
+    FORBIDDEN = ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "게임이름", "출시일", "가격", "링크", "주소", "한글", "한국어", "언어", "플레이타임", "플타", "추천이유"]
     
-    FORBIDDEN_HEADERS = [
-        "1.", "2.", "3.", "4.", "5.", "6.", "7.",
-        "게임이름", "출시일", "가격", "링크", "주소", "한글", "플레이타임", "플타", "추천이유"
-    ]
+    total_items = len(crawl_targets)
+    yield f"data: {json.dumps({'progress': 25, 'msg': f'🚀 {total_items}개의 데이터를 정밀 분석합니다...'})}\n\n"
 
     for idx, item in enumerate(crawl_targets):
-        current_progress = 0.3 + ((idx + 1) / len(crawl_targets) * 0.7)
-        progress_bar.progress(min(current_progress, 1.0))
+        current_percent = 25 + int((idx + 1) / total_items * 70)
+        display_title = item['title'][:15] + "..." if len(item['title']) > 15 else item['title']
+        yield f"data: {json.dumps({'progress': current_percent, 'msg': f'[{idx+1}/{total_items}] 분석 중: {display_title}'})}\n\n"
         
         try:
             api_url = f"https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/{CLUB_ID}/articles/{item['id']}"
-            headers = {'User-Agent': USER_AGENT}
-            response = requests.get(api_url, headers=headers)
+            driver.get(api_url)
             
-            if response.status_code != 200: continue
+            try:
+                json_elem = WebDriverWait(driver, 2).until(EC.presence_of_element_located((By.TAG_NAME, "pre")))
+                json_str = json_elem.text
+            except:
+                json_str = driver.find_element(By.TAG_NAME, "body").text
 
-            data = response.json()
+            data = json.loads(json_str)
             content_html = data['result']['article']['contentHtml']
             soup = BeautifulSoup(content_html, "html.parser")
-            content_text = soup.get_text(separator="\n")
+            content = soup.get_text(separator="\n")
+            
+            pc_url = f"https://cafe.naver.com/ArticleRead.nhn?clubid={CLUB_ID}&articleid={item['id']}"
             
             info = {
-                "카테고리": item['category'],
-                "글제목": item['title'],
-                "게임이름": "-", "출시일": "-", "가격": "-", 
-                "링크": "-", "한글화": "-", "플레이타임": "-",
-                "게시글링크": f"https://cafe.naver.com/ArticleRead.nhn?clubid={CLUB_ID}&articleid={item['id']}"
+                "카테고리": item['category'], "글제목": item['title'],
+                "게임이름": "-", "출시일": "-", "가격": "-", "링크": "-", "한글화": "-", "플레이타임": "-",
+                "게시글링크": pc_url
             }
             
-            if content_text:
-                lines = content_text.split('\n')
+            if content:
+                lines = content.split('\n')
                 
-                def get_safe_value(current_idx, all_lines):
+                def smart_extract(current_line, current_idx, all_lines, keywords):
+                    temp_line = current_line
+                    for useless in ["O,X", "O/X", "(O,X)", "(O/X)", "o,x", "o/x", "OX", "ox"]:
+                        temp_line = temp_line.replace(useless, "")
+
+                    separators = [":", "-", ")"]
+                    for sep in separators:
+                        if sep in temp_line:
+                            parts = temp_line.split(sep, 1)
+                            header_part = parts[0].replace(" ", "")
+                            if any(k in header_part for k in keywords):
+                                val = parts[1].strip()
+                                if "2025/" in val or "2024/" in val: return "-"
+                                if ".kr" in val or ".jpg" in val or ".png" in val: return "-"
+                                if val: return val
+                    
+                    cleaned_line = temp_line
+                    cleaned_line = re.sub(r'^[0-9]+[\.]?', '', cleaned_line)
+                    for k in keywords:
+                        cleaned_line = cleaned_line.replace(k, "")
+                    cleaned_line = cleaned_line.replace("여부", "").strip()
+                    
+                    if len(cleaned_line) > 0 and len(cleaned_line) < 30:
+                        if "2025/" in cleaned_line or ".kr" in cleaned_line: return "-"
+                        return cleaned_line
+
                     for k in range(current_idx + 1, len(all_lines)):
                         val = all_lines[k].strip()
                         if val != "":
-                            for header in FORBIDDEN_HEADERS:
-                                if header in val and len(val) < 30:
-                                    return "-"
+                            is_header = False
+                            for f in FORBIDDEN:
+                                if f in val and len(val) < 30:
+                                    is_header = True
+                                    break
+                            if is_header: return "-"
+                            
+                            if "2025/" in val or "2024/" in val: return "-"
+                            if ".kr" in val and "http" not in val: return "-"
+                            
                             return val
                     return "-"
 
                 for i, line in enumerate(lines):
-                    check_line = line.replace(" ", "")
+                    l = line.replace(" ", "")
                     
-                    if "게임이름" in check_line: info["게임이름"] = get_safe_value(i, lines)
-                    elif "출시일" in check_line: info["출시일"] = get_safe_value(i, lines)
-                    elif "가격" in check_line: info["가격"] = get_safe_value(i, lines)
-                    elif ("링크" in check_line or "주소" in check_line) and "http" not in check_line:
-                            val = get_safe_value(i, lines)
-                            if "http" in val: info["링크"] = val
+                    if "게임이름" in l: 
+                        info["게임이름"] = smart_extract(line, i, lines, ["게임이름"])
+                    elif "출시일" in l: 
+                        info["출시일"] = smart_extract(line, i, lines, ["출시일", "필수아님"])
+                    elif "가격" in l: 
+                        info["가격"] = smart_extract(line, i, lines, ["가격"])
+                    elif ("링크" in l or "주소" in l) and "http" not in l:
+                        val = smart_extract(line, i, lines, ["링크", "주소"])
+                        if "http" in val: info["링크"] = val
                     elif "http" in line and info["링크"] == "-": 
-                         info["링크"] = line.strip()
-                    elif "한글" in check_line: info["한글화"] = get_safe_value(i, lines)
-                    elif "플레이타임" in check_line or "플타" in check_line: info["플레이타임"] = get_safe_value(i, lines)
+                        info["링크"] = line.strip()
+                    elif "한글" in l or "한국어" in l or "언어" in l or "패치" in l: 
+                        info["한글화"] = smart_extract(line, i, lines, ["한글", "한국어", "언어", "패치", "화", "여부"])
+                    elif "플레이타임" in l or "플타" in l: 
+                        info["플레이타임"] = smart_extract(line, i, lines, ["플레이타임", "플타"])
 
             final_data.append(info)
-        except:
+            
+        except Exception as e:
             continue
-
-    status_text.success(f"수집 완료! ({len(final_data)}개)")
-    time.sleep(1)
-    status_text.empty()
-    progress_bar.empty()
     
-    return pd.DataFrame(final_data)
+    driver.quit()
 
-st.set_page_config(page_title="해리야 할래말래?", page_icon="🦦", layout="wide")
+    yield f"data: {json.dumps({'progress': 98, 'msg': '💾 데이터 저장 중...'})}\n\n"
+    
+    if final_data:
+        df = pd.DataFrame(final_data)
+        df.to_csv('harry_game_list_final.csv', index=False, encoding="utf-8-sig")
+    
+    yield f"data: {json.dumps({'progress': 100, 'msg': '완료! 새로고침합니다.', 'done': True})}\n\n"
 
-def parse_playtime_to_hours(text):
+def parse_time(text):
     text = str(text).lower()
-    if text == '-' or text == '':
-        return 0.0
-    
-    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
-    if not numbers:
-        return 0.0
-    
-    values = [float(n) for n in numbers]
-    avg_value = sum(values) / len(values)
-    
-    if '분' in text or 'min' in text:
-        if '시간' not in text and 'hour' not in text:
-            return avg_value / 60
-            
-    return avg_value
+    if text == '-' or text == '': return 0.0
+    nums = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+    if not nums: return 0.0
+    vals = [float(n) for n in nums]
+    avg = sum(vals) / len(vals)
+    if ('분' in text or 'min' in text) and '시간' not in text: return avg / 60
+    return avg
 
-@st.cache_data
-def load_data():
+@app.route('/')
+def index():
     try:
-        df = pd.read_csv('harry_game_list_final.csv')
-        if df.empty: return pd.DataFrame()
-        df = df.fillna('-')
-        df['playtime_hours'] = df['플레이타임'].apply(parse_playtime_to_hours)
-        return df
+        df = pd.read_csv('harry_game_list_final.csv').fillna('-')
+        df['time_num'] = df['플레이타임'].apply(parse_time)
+        games = df.to_dict(orient='records')
     except:
-        return pd.DataFrame()
+        games = []
+    return render_template('index.html', games=games)
 
-with st.sidebar:
-    st.header("⚙️ 데이터 관리")
-    
-    page_limit = st.number_input("탐색할 페이지 수 (1~10)", min_value=1, max_value=10, value=3)
-    
-    if st.button("🚀 데이터 가져오기"):
-        with st.spinner("해쿠아리움에 접속 중입니다..."):
-            new_df = run_crawler(page_limit)
-            if not new_df.empty:
-                new_df.to_csv('harry_game_list_final.csv', index=False, encoding="utf-8-sig")
-                st.cache_data.clear()
-                st.rerun() 
-            else:
-                st.warning("수집된 데이터가 없습니다.")
-    
-    st.info("버튼을 누르면 실시간으로 카페를 탐색합니다.")
+@app.route('/crawl_stream')
+def crawl_stream():
+    pages = int(request.args.get('pages', 3))
+    return Response(stream_with_context(generate_crawl_stream(pages)), mimetype='text/event-stream')
 
-st.title("🦦 해리야 할래말래?")
-st.caption("팬카페 추천 게임 리스트")
-
-df = load_data()
-
-if df.empty:
-    st.info("👈 왼쪽 사이드바에서 [데이터 가져오기] 버튼을 눌러주세요!")
-else:
-    tags = df['카테고리'].unique().tolist()
-    selected_tags = st.multiselect("장르 선택", tags, default=tags)
-    
-    max_time_in_data = int(df['playtime_hours'].max()) + 1 if not df.empty else 100
-    
-    time_filter = st.slider(
-        "최대 플레이타임 (시간)", 
-        min_value=0, 
-        max_value=max_time_in_data, 
-        value=max_time_in_data
-    )
-    
-    filtered_df = df[
-        (df['카테고리'].isin(selected_tags)) &
-        (df['playtime_hours'] <= time_filter)
-    ]
-    
-    st.dataframe(
-        filtered_df,
-        use_container_width=True,
-        hide_index=True,
-        column_order=["카테고리", "글제목", "게임이름", "가격", "한글화", "플레이타임", "링크", "게시글링크"],
-        column_config={
-            "글제목": st.column_config.TextColumn("게시글 제목", width="medium"),
-            "링크": st.column_config.LinkColumn("상점", display_text="구매 🔗"),
-            "게시글링크": st.column_config.LinkColumn("원글", display_text="카페 📄"),
-            "가격": st.column_config.TextColumn("가격"),
-            "플레이타임": st.column_config.TextColumn("플타")
-        }
-    )
-    
-    st.divider()
-    
-    if st.button("랜덤 게임 Picker"):
-        if not filtered_df.empty:
-            pick = filtered_df.sample(1).iloc[0]
-            st.balloons()
-            
-            display_title = pick['게임이름'] if pick['게임이름'] != '-' else pick['글제목']
-            
-            st.success(f"### 🚀 추천: **{display_title}**")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("장르", pick['카테고리'])
-            c2.metric("가격", pick['가격'])
-            c3.metric("한글화", pick['한글화'])
-            c4.metric("플타", pick['플레이타임'])
-            
-            st.markdown(f"👉 [상점 페이지 바로가기]({pick['링크']})")
-            st.markdown(f"👉 [추천글 보러가기]({pick['게시글링크']})")
-        else:
-            st.warning("조건에 맞는 게임이 없습니다.")
+if __name__ == '__main__':
+    app.run(debug=True)

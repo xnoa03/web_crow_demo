@@ -1,5 +1,6 @@
-streamlit
+flask
 pandas
 selenium
 beautifulsoup4
 requests
+gunicorn
