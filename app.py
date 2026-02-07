@@ -12,8 +12,9 @@ from selenium.webdriver.support import expected_conditions as EC
 
 app = Flask(__name__)
 
+# --- [크롤링 제너레이터] ---
 def generate_crawl_stream(max_pages):
-    yield f"data: {json.dumps({'progress': 5, 'msg': '🚀 고속 브라우저 모드 시동 중...'})}\n\n"
+    yield f"data: {json.dumps({'progress': 5, 'msg': '🚀 초고속 경량 브라우저 시동 중...'})}\n\n"
     
     TARGET_TAGS = ['게임', '기타', '공겜', '할 게임', '할게임']
     CLUB_ID = "27646284"
@@ -27,12 +28,21 @@ def generate_crawl_stream(max_pages):
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument(f"user-agent={USER_AGENT}")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
-    chrome_options.page_load_strategy = 'eager' 
+    
+    # [핵심 1] 페이지 로딩 전략: 'none' (아무것도 안 기다림, 내가 알아서 멈춤)
+    chrome_options.page_load_strategy = 'none' 
     
     driver = webdriver.Chrome(options=chrome_options)
+    
+    # [핵심 2] CDP 명령어로 불필요한 리소스 원천 차단 (이미지, 폰트, CSS, 미디어)
+    driver.execute_cdp_cmd('Network.setBlockedURLs', {
+        "urls": ["*.jpg", "*.png", "*.gif", "*.css", "*.woff", "*.mp4", "*.mp3", "*.svg", "*.ico"]
+    })
+    driver.execute_cdp_cmd('Network.enable', {})
+    
     crawl_targets = []
     
+    # 1. 목록 수집
     try:
         for page in range(1, max_pages + 1):
             yield f"data: {json.dumps({'progress': 10 + (page/max_pages*10), 'msg': f'📋 {page}페이지 목록 스캔 중...'})}\n\n"
@@ -40,8 +50,10 @@ def generate_crawl_stream(max_pages):
             target_url = f"https://cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.page={page}"
             driver.get(target_url)
             
+            # 로딩 전략이 'none'이라서 강제로 멈춰야 함 (제목 뜰 때까지 대기)
             try:
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.article")))
+                driver.execute_script("window.stop();") # 다 떴으면 로딩 강제 종료 (시간 절약)
             except:
                 pass
 
@@ -75,24 +87,27 @@ def generate_crawl_stream(max_pages):
         yield f"data: {json.dumps({'progress': 100, 'msg': '수집된 데이터가 없습니다.', 'done': True})}\n\n"
         return
 
+    # 2. 상세 수집
     final_data = []
     FORBIDDEN = ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "게임이름", "출시일", "가격", "링크", "주소", "한글", "한국어", "언어", "플레이타임", "플타", "추천이유"]
     
     total_items = len(crawl_targets)
-    yield f"data: {json.dumps({'progress': 25, 'msg': f'🚀 {total_items}개의 데이터를 정밀 분석합니다...'})}\n\n"
+    yield f"data: {json.dumps({'progress': 25, 'msg': f'🚀 {total_items}개의 데이터를 초고속으로 추출합니다...'})}\n\n"
 
     for idx, item in enumerate(crawl_targets):
         current_percent = 25 + int((idx + 1) / total_items * 70)
         display_title = item['title'][:15] + "..." if len(item['title']) > 15 else item['title']
-        yield f"data: {json.dumps({'progress': current_percent, 'msg': f'[{idx+1}/{total_items}] 분석 중: {display_title}'})}\n\n"
+        yield f"data: {json.dumps({'progress': current_percent, 'msg': f'[{idx+1}/{total_items}] 분석: {display_title}'})}\n\n"
         
         try:
             api_url = f"https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/{CLUB_ID}/articles/{item['id']}"
             driver.get(api_url)
             
+            # [핵심 3] API JSON은 글자뿐이라 매우 빠름 + 'pre' 태그 뜨자마자 낚아채기
             try:
-                json_elem = WebDriverWait(driver, 2).until(EC.presence_of_element_located((By.TAG_NAME, "pre")))
+                json_elem = WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.TAG_NAME, "pre")))
                 json_str = json_elem.text
+                driver.execute_script("window.stop();") # 더 볼 것도 없다, 정지!
             except:
                 json_str = driver.find_element(By.TAG_NAME, "body").text
 
